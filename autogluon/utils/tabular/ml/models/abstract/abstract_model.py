@@ -10,9 +10,9 @@ import pandas as pd
 import psutil
 
 from .model_trial import model_trial
-from ...constants import BINARY, REGRESSION, REFIT_FULL_SUFFIX
+from ...constants import BINARY, REGRESSION, REFIT_FULL_SUFFIX, OBJECTIVES_TO_NORMALIZE
 from ...tuning.feature_pruner import FeaturePruner
-from ...utils import get_pred_from_proba, generate_train_test_split, shuffle_df_rows, convert_categorical_to_int
+from ...utils import get_pred_from_proba, generate_train_test_split, shuffle_df_rows, convert_categorical_to_int, normalize_pred_probas
 from .... import metrics
 from ....utils.loaders import load_pkl
 from ....utils.savers import save_pkl, save_json
@@ -76,6 +76,12 @@ class AbstractModel:
             self.stopping_metric = self.objective_func
         else:
             self.stopping_metric = stopping_metric
+
+        self.normalize_predprobs = False  # do probabilistic predictions need to be renormalized
+        if self.objective_func.name in OBJECTIVES_TO_NORMALIZE:
+            self.normalize_predprobs = True
+            logger.debug(self.name+" predicted probabilities will be transformed to never =0 since eval_metric="+self.objective_func.name)
+
 
         if isinstance(self.objective_func, metrics._ProbaScorer):
             self.metric_needs_y_pred = False
@@ -184,21 +190,18 @@ class AbstractModel:
             X = self.preprocess(X)
 
         if self.problem_type == REGRESSION:
-            return self.model.predict(X)
-
-        y_pred_proba = self.model.predict_proba(X)
+            y_pred_proba = self.model.predict(X)
+        else:
+            y_pred_proba = self.model.predict_proba(X)
 
         if self.problem_type == BINARY:
-            if len(y_pred_proba.shape) == 1:
-                return y_pred_proba
-            elif y_pred_proba.shape[1] > 1:
-                return y_pred_proba[:, 1]
-            else:
-                return y_pred_proba
-        elif y_pred_proba.shape[1] > 2:
-            return y_pred_proba
-        else:
-            return y_pred_proba[:, 1]
+            if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba = y_pred_proba[:, 1]
+        elif self.problem_type != REGRESSION and len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] <= 2:
+            y_pred_proba = y_pred_proba[:, 1]
+        if self.normalize_predprobs:
+            y_pred_proba = normalize_pred_probas(y_pred_proba, self.problem_type)
+        return y_pred_proba
 
     def score(self, X, y, eval_metric=None, metric_needs_y_pred=None, preprocess=True):
         if eval_metric is None:
